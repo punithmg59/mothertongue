@@ -102,7 +102,7 @@ class GoogleMlKitOcrService implements OcrService {
         language: language,
         processingDuration: stopwatch.elapsed,
       );
-    } catch (error, stackTrace) {
+    } catch (error) {
       if (error is AppException) rethrow;
 
       throw OcrException(

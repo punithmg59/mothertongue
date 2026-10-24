@@ -18,3 +18,8 @@ class OcrException extends AppException {
 class ImageProcessingException extends AppException {
   const ImageProcessingException(super.message, [super.cause]);
 }
+
+/// Exception thrown when translation fails
+class TranslationException extends AppException {
+  const TranslationException(super.message, [super.cause]);
+}
