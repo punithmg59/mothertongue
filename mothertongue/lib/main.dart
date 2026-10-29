@@ -2,18 +2,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'features/translation/ocr_service.dart';
 import 'features/translation/text_region.dart';
 import 'features/translation/translation_service.dart';
 
-Future<void> main() async {
-  // Load .env file from parent directory
-  await dotenv.load(fileName: '../.env');
-  
-  // Initialize services with API key from .env
+void main() {
+  // Initialize services with hardcoded backend URL for mobile device
   AppServices.initialize();
   
   runApp(MotherTongueApp(
@@ -53,7 +49,7 @@ class MotherTongueApp extends StatelessWidget {
   }
 }
 
-// Initialize services with .env configuration
+// Initialize services with hardcoded configuration for mobile device
 class AppServices {
   static OcrService? ocrService;
   static BackendTranslationService? translationService;
@@ -61,10 +57,11 @@ class AppServices {
   static void initialize() {
     ocrService = GoogleMlKitOcrService();
     
-    // Read backend URL from .env or use default
-    // For physical device on same network: use your computer's IP
-    // Example: http://192.168.1.100:8000
-    final backendUrl = dotenv.env['BACKEND_URL'] ?? 'http://10.0.2.2:8000';
+    // Hardcoded backend URL for physical Android device on same network
+    // Computer IP: 192.168.43.244
+    // Backend port: 8000
+    const backendUrl = 'http://192.168.43.244:8000';
+    print('Using backend URL: $backendUrl');
     translationService = BackendTranslationService(baseUrl: backendUrl);
   }
 }

@@ -34,6 +34,63 @@ SARVAM_TIMEOUT = 30  # seconds
 if not SARVAM_API_KEY:
     print("WARNING: SARVAM_API_KEY not found in environment variables")
 
+# Language code mapping: UI names to Sarvam API codes
+LANGUAGE_CODE_MAP = {
+    "hindi": "hi-IN",
+    "english": "en-IN",
+    "kannada": "kn-IN",
+    "tamil": "ta-IN",
+    "telugu": "te-IN",
+    "malayalam": "ml-IN",
+    "marathi": "mr-IN",
+    "bengali": "bn-IN",
+    "gujarati": "gu-IN",
+    "punjabi": "pa-IN",
+    "odia": "od-IN",
+    "assamese": "as-IN",
+    "bodo": "brx-IN",
+    "dogri": "doi-IN",
+    "konkani": "kok-IN",
+    "kashmiri": "ks-IN",
+    "maithili": "mai-IN",
+    "manipuri": "mni-IN",
+    "nepali": "ne-IN",
+    "sanskrit": "sa-IN",
+    "santali": "sat-IN",
+    "sindhi": "sd-IN",
+    "urdu": "ur-IN",
+    # Also support direct codes
+    "hi-IN": "hi-IN",
+    "en-IN": "en-IN",
+    "kn-IN": "kn-IN",
+    "ta-IN": "ta-IN",
+    "te-IN": "te-IN",
+    "ml-IN": "ml-IN",
+    "mr-IN": "mr-IN",
+    "bn-IN": "bn-IN",
+    "gu-IN": "gu-IN",
+    "pa-IN": "pa-IN",
+    "od-IN": "od-IN",
+    "as-IN": "as-IN",
+    "brx-IN": "brx-IN",
+    "doi-IN": "doi-IN",
+    "kok-IN": "kok-IN",
+    "ks-IN": "ks-IN",
+    "mai-IN": "mai-IN",
+    "mni-IN": "mni-IN",
+    "ne-IN": "ne-IN",
+    "sa-IN": "sa-IN",
+    "sat-IN": "sat-IN",
+    "sd-IN": "sd-IN",
+    "ur-IN": "ur-IN",
+    "auto": "auto",
+}
+
+def normalize_language_code(lang: str) -> str:
+    """Convert language name or code to Sarvam API code."""
+    lang_lower = lang.lower()
+    return LANGUAGE_CODE_MAP.get(lang_lower, lang)
+
 
 class TextBlock(BaseModel):
     """A single text block with bounding box coordinates."""
@@ -104,10 +161,14 @@ async def call_sarvam_api(text: str, source_lang: str, target_lang: str) -> str:
     if is_mathematical_content(text):
         return text
     
+    # Normalize language codes
+    source_code = normalize_language_code(source_lang)
+    target_code = normalize_language_code(target_lang)
+    
     payload = {
-        "source_language_code": source_lang if source_lang != "auto" else "auto",
-        "target_language_code": target_lang,
-        "text": text,
+        "source_language_code": source_code if source_code != "auto" else "auto",
+        "target_language_code": target_code,
+        "input": text,  # Sarvam API expects "input" not "text"
         "speaker_gender": "Female",
         "mode": "formal",
         "model": "mayura:v1"
@@ -120,6 +181,7 @@ async def call_sarvam_api(text: str, source_lang: str, target_lang: str) -> str:
     
     async with httpx.AsyncClient(timeout=SARVAM_TIMEOUT) as client:
         try:
+            print(f"Calling Sarvam API: source={source_code}, target={target_code}, text_length={len(text)}")
             response = await client.post(
                 SARVAM_API_URL,
                 json=payload,
@@ -127,8 +189,14 @@ async def call_sarvam_api(text: str, source_lang: str, target_lang: str) -> str:
             )
             
             if response.status_code != 200:
+                # Log the error response for debugging (without exposing API key)
+                try:
+                    error_body = response.json()
+                    print(f"Sarvam API error {response.status_code}: {error_body}")
+                except:
+                    print(f"Sarvam API error {response.status_code}: {response.text}")
+                
                 error_detail = f"Sarvam API error: {response.status_code}"
-                # Don't expose API key in error messages
                 raise HTTPException(
                     status_code=response.status_code,
                     detail=error_detail
@@ -193,16 +261,26 @@ async def translate(request: TranslationRequest):
             detail="No text blocks provided for translation"
         )
     
+    # Normalize language codes
+    normalized_source = normalize_language_code(request.source_language)
+    normalized_target = normalize_language_code(request.target_language)
+    
+    print(f"Translation request: source={request.source_language} -> {normalized_source}, target={request.target_language} -> {normalized_target}, blocks={len(request.text_blocks)}")
+    
     start_time = time.time()
     translated_blocks = []
     
     try:
         # Translate each text block
-        for block in request.text_blocks:
+        for i, block in enumerate(request.text_blocks):
+            if not block.text or not block.text.strip():
+                print(f"Warning: Empty text block at index {i}, skipping")
+                continue
+            
             translated_text = await call_sarvam_api(
                 block.text,
-                request.source_language,
-                request.target_language
+                normalized_source,
+                normalized_target
             )
             
             translated_blocks.append(TranslatedBlock(
@@ -213,12 +291,18 @@ async def translate(request: TranslationRequest):
                 height=block.height
             ))
         
+        if not translated_blocks:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid text blocks to translate after filtering empty blocks"
+            )
+        
         processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
         
         return TranslationResponse(
             translated_blocks=translated_blocks,
-            source_language=request.source_language,
-            target_language=request.target_language,
+            source_language=normalized_source,
+            target_language=normalized_target,
             processing_time_ms=processing_time
         )
         
@@ -227,9 +311,11 @@ async def translate(request: TranslationRequest):
     except Exception as e:
         # Log error without exposing sensitive information
         print(f"Translation error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail="An unexpected error occurred during translation"
+            detail=f"An unexpected error occurred during translation: {str(e)}"
         )
 
 
