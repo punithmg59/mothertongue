@@ -102,6 +102,8 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
   // Video processing results
   double? _videoDuration;
   List<Map<String, dynamic>> _videoOcrResults = [];
+  bool _isTranslatingVideo = false;
+  Map<String, String> _translationCache = {}; // Cache for deduplication
 
   @override
   void initState() {
@@ -259,8 +261,10 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
 
     setState(() {
       _isProcessingVideo = true;
+      _isTranslatingVideo = false;
       _errorMessage = null;
       _videoOcrResults = [];
+      _translationCache.clear();
     });
 
     try {
@@ -278,6 +282,8 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
       // Process each frame with OCR
       final results = <Map<String, dynamic>>[];
       final language = _sourceLanguage == 'Auto-detect' ? 'Hindi' : _sourceLanguage;
+      final allTextBlocks = <TextRegion>[];
+      final blockToFrameMap = <TextRegion, int>{}; // Map block to frame index
 
       for (final frame in captureResult.frames) {
         try {
@@ -295,12 +301,22 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
             language: language,
           );
 
+          // Store blocks with frame index for translation
+          for (final block in ocrResult.blocks) {
+            if (block.text.trim().isNotEmpty) {
+              allTextBlocks.add(block);
+              blockToFrameMap[block] = frame.frameIndex;
+            }
+          }
+
           results.add({
             'timestamp': frame.timestamp,
             'frameIndex': frame.frameIndex,
-            'text': ocrResult.fullText,
+            'fullText': ocrResult.fullText,
             'blockCount': ocrResult.blockCount,
             'hasText': ocrResult.isNotEmpty,
+            'blocks': ocrResult.blocks,
+            'translatedText': '', // Will be filled after translation
           });
 
           // Clean up temp file
@@ -310,9 +326,11 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
           results.add({
             'timestamp': frame.timestamp,
             'frameIndex': frame.frameIndex,
-            'text': '',
+            'fullText': '',
             'blockCount': 0,
             'hasText': false,
+            'blocks': [],
+            'translatedText': '',
             'error': e.toString(),
           });
         }
@@ -327,6 +345,11 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
 
       // Clean up captured frames
       await _videoFrameCaptureService.cleanup();
+
+      // Now translate the text blocks
+      if (allTextBlocks.isNotEmpty && _translationService != null) {
+        await _translateVideoText(allTextBlocks, blockToFrameMap, results);
+      }
     } catch (error) {
       if (!mounted) return;
 
@@ -334,6 +357,97 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
         _isProcessingVideo = false;
         _errorMessage = error.toString();
       });
+    }
+  }
+
+  Future<void> _translateVideoText(
+    List<TextRegion> textBlocks,
+    Map<TextRegion, int> blockToFrameMap,
+    List<Map<String, dynamic>> frameResults,
+  ) async {
+    setState(() {
+      _isTranslatingVideo = true;
+    });
+
+    try {
+      // Deduplicate text blocks
+      final uniqueBlocks = <TextRegion>[];
+      final seenTexts = <String>{};
+      
+      for (final block in textBlocks) {
+        final normalizedText = block.text.trim().toLowerCase();
+        if (!seenTexts.contains(normalizedText) && normalizedText.isNotEmpty) {
+          seenTexts.add(normalizedText);
+          uniqueBlocks.add(block);
+        }
+      }
+
+      print('Translating ${uniqueBlocks.length} unique text blocks');
+
+      // Translate unique blocks
+      final sourceLang = _sourceLanguage == 'Auto-detect' ? 'Hindi' : _sourceLanguage;
+      final translationResult = await _translationService!.translate(
+        uniqueBlocks,
+        sourceLanguage: sourceLang,
+        targetLanguage: _targetLanguage,
+      );
+
+      if (!mounted) return;
+
+      // Build translation cache
+      for (int i = 0; i < uniqueBlocks.length; i++) {
+        final originalBlock = uniqueBlocks[i];
+        final translatedBlock = translationResult.translatedBlocks[i];
+        _translationCache[originalBlock.text] = translatedBlock.text;
+      }
+
+      // Map translations back to frames
+      final frameTranslations = <int, List<String>>{};
+      
+      for (final block in textBlocks) {
+        final frameIndex = blockToFrameMap[block];
+        if (frameIndex == null) continue;
+        
+        final translatedText = _translationCache[block.text] ?? block.text;
+        
+        if (!frameTranslations.containsKey(frameIndex)) {
+          frameTranslations[frameIndex] = [];
+        }
+        frameTranslations[frameIndex]!.add(translatedText);
+      }
+
+      // Update frame results with translations
+      for (final frameResult in frameResults) {
+        final frameIndex = frameResult['frameIndex'] as int;
+        final translations = frameTranslations[frameIndex] ?? [];
+        frameResult['translatedText'] = translations.join('\n');
+      }
+
+      setState(() {
+        _videoOcrResults = frameResults;
+        _isTranslatingVideo = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Translated ${uniqueBlocks.length} text blocks'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _isTranslatingVideo = false;
+        _errorMessage = 'Translation failed: $error';
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.redAccent.shade700,
+          content: Text('Video translation failed: $error'),
+        ),
+      );
     }
   }
 
@@ -828,18 +942,40 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
                 ),
               ),
               const Spacer(),
-              Text(
-                '$framesWithText/${_videoOcrResults.length} frames with text',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Colors.white70,
+              if (_isTranslatingVideo)
+                const Row(
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFAAA0FF)),
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    Text(
+                      'Translating...',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFFAAA0FF),
+                      ),
+                    ),
+                  ],
+                )
+              else
+                Text(
+                  '$framesWithText/${_videoOcrResults.length} frames with text',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.white70,
+                  ),
                 ),
-              ),
             ],
           ),
           const SizedBox(height: 12),
           Container(
-            constraints: const BoxConstraints(maxHeight: 300),
+            constraints: const BoxConstraints(maxHeight: 400),
             child: ListView.builder(
               shrinkWrap: true,
               itemCount: _videoOcrResults.length,
@@ -847,7 +983,8 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
                 final result = _videoOcrResults[index];
                 final timestamp = result['timestamp'] as double;
                 final hasText = result['hasText'] as bool;
-                final text = result['text'] as String;
+                final fullText = result['fullText'] as String;
+                final translatedText = result['translatedText'] as String;
                 final blockCount = result['blockCount'] as int;
                 
                 return Container(
@@ -903,37 +1040,56 @@ class _TranslationHomePageState extends State<TranslationHomePage> {
                             ),
                         ],
                       ),
-                      if (hasText && text.isNotEmpty) ...[
-                        const SizedBox(height: 6),
+                      if (hasText && fullText.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Original:',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white54,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
                         Text(
-                          text,
+                          fullText,
                           style: const TextStyle(
                             fontSize: 13,
                             color: Colors.white,
                           ),
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
                         ),
-                      ] else if (result.containsKey('error')) ...[
-                        const SizedBox(height: 4),
+                      ],
+                      if (hasText && translatedText.isNotEmpty) ...[
+                        const SizedBox(height: 8),
                         Text(
-                          'Error: ${result['error']}',
+                          '$_targetLanguage:',
                           style: const TextStyle(
                             fontSize: 11,
-                            color: Colors.redAccent,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFAAA0FF),
                           ),
                         ),
-                      ] else ...[
                         const SizedBox(height: 4),
-                        const Text(
-                          'No text detected',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white38,
-                            fontStyle: FontStyle.italic,
+                        Text(
+                          translatedText,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Color(0xFFAAA0FF),
                           ),
                         ),
                       ],
+                      if (!hasText)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'No text detected',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white38,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 );
