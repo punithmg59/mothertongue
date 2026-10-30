@@ -23,3 +23,8 @@ class ImageProcessingException extends AppException {
 class TranslationException extends AppException {
   const TranslationException(super.message, [super.cause]);
 }
+
+/// Exception thrown when video processing fails
+class VideoProcessingException extends AppException {
+  const VideoProcessingException(super.message, [super.cause]);
+}

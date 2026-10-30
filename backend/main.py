@@ -106,6 +106,23 @@ class TranslationRequest(BaseModel):
     text_blocks: List[TextBlock] = Field(..., description="List of text blocks to translate")
     source_language: str = Field(..., description="Source language code (e.g., hi-IN, en-IN)")
     target_language: str = Field(..., description="Target language code (e.g., kn-IN)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "text_blocks": [
+                    {
+                        "text": "नमस्ते",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "width": 100.0,
+                        "height": 20.0
+                    }
+                ],
+                "source_language": "hi-IN",
+                "target_language": "kn-IN"
+            }
+        }
 
 
 class TranslatedBlock(BaseModel):
@@ -235,10 +252,23 @@ async def root():
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "sarvam_configured": bool(SARVAM_API_KEY)
-    }
+    try:
+        # Check if Sarvam API key is configured
+        sarvam_configured = bool(SARVAM_API_KEY)
+        
+        return {
+            "status": "healthy",
+            "sarvam_configured": sarvam_configured,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        print(f"Health check error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=503,
+            detail="Service unhealthy"
+        )
 
 
 @app.post("/translate", response_model=TranslationResponse)
@@ -255,6 +285,14 @@ async def translate(request: TranslationRequest):
     Raises:
         HTTPException: If translation fails
     """
+    # Log the raw request for debugging
+    import json
+    print(f"Raw request body: {json.dumps({
+        'text_blocks': [{'text': b.text, 'x': b.x, 'y': b.y, 'width': b.width, 'height': b.height} for b in request.text_blocks],
+        'source_language': request.source_language,
+        'target_language': request.target_language
+    })}")
+    
     if not request.text_blocks:
         raise HTTPException(
             status_code=400,
@@ -266,6 +304,19 @@ async def translate(request: TranslationRequest):
     normalized_target = normalize_language_code(request.target_language)
     
     print(f"Translation request: source={request.source_language} -> {normalized_source}, target={request.target_language} -> {normalized_target}, blocks={len(request.text_blocks)}")
+    
+    # Validate normalized codes
+    valid_codes = {'auto', 'bn-IN', 'en-IN', 'gu-IN', 'hi-IN', 'kn-IN', 'ml-IN', 'mr-IN', 'od-IN', 'pa-IN', 'ta-IN', 'te-IN', 'as-IN', 'brx-IN', 'doi-IN', 'kok-IN', 'ks-IN', 'mai-IN', 'mni-IN', 'ne-IN', 'sa-IN', 'sat-IN', 'sd-IN', 'ur-IN'}
+    if normalized_source not in valid_codes and normalized_source != 'auto':
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source language code: {normalized_source}. Valid codes: {', '.join(sorted(valid_codes))}"
+        )
+    if normalized_target not in valid_codes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid target language code: {normalized_target}. Valid codes: {', '.join(sorted(valid_codes))}"
+        )
     
     start_time = time.time()
     translated_blocks = []
